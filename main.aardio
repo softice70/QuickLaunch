@@ -1,0 +1,687 @@
+import win.ui;
+import win.ui.atom;
+import win.ui.menu;
+import win.clip;
+import win.util.tray;
+import win.util.shellhook;
+import win.ui.accelerator;
+import win.reg;
+import winex;
+import process;
+import process.popen;
+import process.control;
+import process.mutex;
+import string;
+import string.cmdline;
+import string.conv.pinyin;
+import string.list;
+import key.hook;
+import key.hotkey;
+import key.ime;
+import time.performance;
+import fsys.ini;
+import crypt.bin;
+import web.json;
+import debug;
+import debug.logex;
+
+/***********************************
+ * 全局变量                        *
+ ***********************************/
+//获取系统默认缩放（表示百分比的小数）
+var dpiScale = gdi.getDpiScale();
+var guid = "d2b80641-aa90-be4c-4ee2-5963560a8163";
+var runTimesFile = "\QLaunch.data";
+var ini = fsys.ini("\QLaunch.ini");
+var cmdFilePath = ini.read("Config", "CmdFile")? ini.read("Config", "CmdFile"): "\cmds.txt";
+var maxRows = ini.read("Config", "MaxRows")? tonumber(ini.read("Config", "MaxRows")): 10;
+var rowHeight = ini.read("Config", "RowHeight")? math.floor(tonumber(ini.read("Config", "RowHeight")) * dpiScale): math.floor(23.0 * dpiScale); // 每行的高度
+var autoRun = ini.read("Config", "AutoRun")? tonumber(ini.read("Config", "AutoRun")): 0;
+var isWriteLog = ini.read("Config", "Log")? tonumber(ini.read("Config", "Log")): 0;
+var totalCmdPath = ini.read("Tools", "TotalCmd")? ini.read("Tools", "TotalCmd"): "d:\tools\SystemTools\totalcmd\TOTALCMD64.EXE";
+var everythingPath = ini.read("Tools", "Everything")? ini.read("Tools", "Everything"): "d:\tools\SystemTools\DiskTools\Everything\Everything.exe";
+var nirCmdPath = ini.read("Tools", "nircmd")? ini.read("Tools", "nircmd"): "\tools\nircmd.exe";
+var winCtlPath = ini.read("Tools", "WinCtl")? ini.read("Tools", "WinCtl"): "\tools\WinCtl.exe";
+var winLeft = ini.read("Window", "WinLeft")? tonumber(ini.read("Window", "WinLeft")): -1;
+var winTop = ini.read("Window", "WinTop")? tonumber(ini.read("Window", "WinTop")): -1;
+
+var lastActiveHwnd = null;
+var isMainFormShow = true;
+var listInternalCmds = {
+	[1] = {":quit", "退出QLaunch应用", ":quit"},
+	[2] = {":reload", "重新加载配置文件", ":reload"},
+	[3] = {":py:", "拼音搜索，如 :py:jiazai", ":py"},
+	[4] = {":tcl", "TotalCmd左侧打开剪贴板内容", "%TOTALCMD% /L=""{%c}"""},
+	[5] = {":tcr", "TotalCmd右侧打开剪贴板内容", "%TOTALCMD% /R=""{%c}"""},
+	[6] = {":es", "Everything搜索剪贴板内容", "%EVERYTHING% -s {%c}"},
+	[7] = {":encodeBase64", "对剪贴板内容进行Base64编码", ":encodeBase64"},
+	[8] = {":decodeBase64", "对剪贴板内容进行Base64解码", ":decodeBase64"},
+	[9] = {":formatJson", "对剪贴板内的Json串进行格式化", ":formatJson"},
+}
+var listAllCmds = {};
+var listMatchedCmds = {};
+var runTimes = string.list();
+var firstItemNo = -1; // 当前显示的第一个项目序号
+var tmLastPressCtrl = 0;
+var MIN_INTERVAL = 120;
+var MAX_INTERVAL = 350;
+
+// 单例检测
+var mutex = process.mutex(guid) 
+if( mutex.conflict ){
+    var atom,hwndConflict = win.ui.atom.find(guid)
+    if( hwndConflict ) win.setForeground(hwndConflict);
+    return;
+}
+/*DSG{{*/
+mainForm = win.form(text="QLaunch";right=499;bottom=299;bgcolor=6316128;border="none";exmode="toolwindow";max=false;mode="popup";sysmenu=false;title=false;topmost=1)
+mainForm.add(
+edit={cls="edit";left=30;top=8;right=446;bottom=30;bgcolor=6316128;color=16775984;dl=1;dr=1;dt=1;font=LOGFONT(h=-14;name='微软雅黑');z=2};
+listview={cls="listview";left=0;top=36;right=501;bottom=301;bgcolor=3289650;color=16777215;dl=1;dr=1;dt=1;font=LOGFONT(h=-15;name='FiraCode Nerd Font Mono');fullRow=1;msel=false;z=3};
+plusEditBg={cls="plus";left=0;top=0;right=501;bottom=37;background="\res\softice.png";z=1}
+)
+/*}}*/
+
+/*
+ * 函数
+*/
+// 初始化日志
+initLogging = function(){
+	if(isWriteLog){
+		import debug;
+		import debug.logex;
+
+		// 设置日志文件
+		debug.logex.setPath("\QLaunch.log");
+		debug.logex.checkSize(0x20000); //设置日志大小
+	}
+}
+
+// 设置开机启动
+setAutoRun = function(auto){
+	var appPath = io.fullpath("\QLaunch.exe");
+	var startupKeyPath = "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run";
+	var reg = win.reg(startupKeyPath);
+	if(auto){
+		reg.setValue("QLaunch", appPath);
+	}else{
+		reg.delValue("QLaunch"); //删除指定的值
+	}
+	reg.close();
+}
+
+// 设置窗口透明度
+setOpacity= function(hwnd,alpha){
+	var style = ( ::GetWindowLong(hwnd,0xFFFFFFEC)) | 0x80000 ; 
+	if( !::SetWindowLong(hwnd,0xFFFFFFEC,style ) ) return; 
+	::User32.SetLayeredWindowAttributes(hwnd,0,alpha,2)
+}
+
+// 设置窗口置顶
+setWindowTopmost = function(hwnd, topmost=true ){
+	if(topmost){
+		win.setForeground( hwnd );
+		win.setActive( hwnd );
+		win.setTopmost(hwnd); 
+	}else{
+		win.setTopmost(hwnd, false); 
+	}
+}
+
+// 显示菜单
+showPopMenu = function(){
+	mainForm.popmenu = win.ui.popmenu(mainForm);//创建弹出菜单
+	mainForm.popmenu.add('更新配置', function(id){ runCmd(listInternalCmds[2]); });	
+	mainForm.popmenu.add(isMainFormShow? '隐藏主界面': '显示主界面', function(id){ showMainWindow(!isMainFormShow); });	
+	mainForm.popmenu.add();//分隔线
+	mainForm.popmenu.add('退出',function(id){ mainForm.close() })	    
+	    	
+	mainForm.popmenu.popup();
+	mainForm.popmenu.close();
+}
+
+activeWindow = function(hwnd){
+	if (win.isIconic(hwnd)) win.show(hwnd, 9/*_SW_RESTORE*/);
+
+	var hForeWnd = win.getForeground();
+	var dwCurID = ::Kernel32.GetCurrentThreadId();
+	var dwForeID = ::User32.GetWindowThreadProcessId( hForeWnd, null);
+	if(dwCurID != dwForeID)
+		::User32.AttachThreadInput( dwCurID, dwForeID, true);
+	win.setPos(hwnd, -1/*_HWND_TOPMOST*/, 0, 0, 0, 0, 1/*_SWP_NOSIZE*/ | 2/*_SWP_NOMOVE*/);
+	::User32.BringWindowToTop(hwnd);
+	setWindowTopmost(hwnd);
+	if(dwCurID != dwForeID)
+		::User32.AttachThreadInput( dwCurID, dwForeID, false);
+}
+
+// 显示或隐藏主窗
+showMainWindow = function(isShow){
+	isMainFormShow = isShow;
+	mainForm.edit.text = "";
+	if(isMainFormShow){
+		mainForm.show();
+		activeWindow(mainForm.hwnd);
+		mainForm.edit.setFocus();
+		// 关闭中文输入法
+		key.ime.setOpenStatus(0, mainForm.edit.hwnd);
+		if(isWriteLog) debug.logex.print("界面激活");
+	}else{
+		mainForm.show(false);
+		if(isWriteLog) debug.logex.print("界面隐藏");
+		//mainForm.show(6/*_SW_MINIMIZE*/);
+	}
+}
+
+// 设置主窗口尺寸
+resizeWindow = function(){
+    // 获得 listview 中的行数，并确保行数不会超过最大值
+    var rowCount = math.min(mainForm.listview.count, maxRows);
+
+    // 计算 listview 的高度
+    mainForm.listview.height = rowCount * rowHeight;
+
+    // 计算并设置 mainForm 的高度
+    mainForm.height = mainForm.listview.height + mainForm.plusEditBg.height;
+}
+
+// 更新 listview
+updateListview = function(start, sel){
+	if(start != firstItemNo){
+		var lastItemCount = mainForm.listview.count;
+		if(#listMatchedCmds > 0){
+			var items = table.slice(listMatchedCmds, start, math.min(#listMatchedCmds, start + maxRows - 1));
+			mainForm.listview.replaceItems(items);
+			mainForm.listview.setSelected(math.min(sel, mainForm.listview.count));
+			firstItemNo = start;
+		}else{
+			mainForm.listview.clear();
+			firstItemNo = -1;
+		}
+		if(mainForm.listview.count != lastItemCount) resizeWindow();
+	}
+}
+
+// 加载命令配置文件
+loadCmds = function(){
+	runTimes.load(runTimesFile);
+	table.clear(listAllCmds);
+	for(i=1; #listInternalCmds; 1){
+		addCmds(listInternalCmds[i]);
+	}
+	for line in io.lines(cmdFilePath){
+		addCmds(string.split(line, '\t'));
+	}
+}
+
+// 添加命令
+addCmds = function(oneCmd){
+	if(!string.startWith(oneCmd[1], ';') && !string.startWith(oneCmd[1], '#')){
+		if(!runTimes.find(oneCmd[1])){
+			runTimes.set(oneCmd[1], 0);
+		}
+		var newCmd = table.clone(oneCmd);
+		var key = string.lower(oneCmd[1]);
+		var disc = string.lower(oneCmd[2]);
+		var discPinYin = string.conv.pinyin(disc, "");
+		table.push(newCmd, key + ' ' + disc);
+		table.push(newCmd, (type(discPinYin) == "string"? discPinYin: ''));
+		table.insert(newCmd, #listAllCmds + 1);
+		table.push(listAllCmds, newCmd);
+	}
+}
+
+// 匹配命令
+matchCmds = function(text){
+	table.clear(listMatchedCmds);
+	var key, searchFieldId;
+	if(string.startWith(text, ':py:')){ // 拼音搜索
+		key = string.lower(string.trim(string.slice(text, 5)));
+		searchFieldId = 6;
+	}else{
+		key = string.lower(string.trim(text));
+		searchFieldId = 5;
+	}
+	if(string.len(key) > 0){
+		for(i=1; #listAllCmds; 1){
+			if(string.indexOf(string.lower(listAllCmds[i][searchFieldId]), key)){
+				var cmd = table.slice(listAllCmds[i], 2, 4);
+				table.push(listMatchedCmds, cmd);
+			}
+		}
+		sortCmds(listMatchedCmds);
+		for(i=1; #listMatchedCmds; 1){
+			table.insert(listMatchedCmds[i], i);
+		}
+	}
+	firstItemNo = -1;
+}
+
+// 命令排序
+sortCmds = function(cmds){
+	table.sort(cmds, function(next){
+		if(runTimes[owner[1]] !== null && runTimes[next[1]] !== null){
+			if(tonumber(runTimes[owner[1]]) > tonumber(runTimes[next[1]])){
+				return true;
+			}elseif(tonumber(runTimes[owner[1]]) < tonumber(runTimes[next[1]])){
+				return false;
+			}else{
+				return string.cmp(owner[1], next[1]) < 0;
+			}
+		}else{
+			return string.cmp(owner[1], next[1]) < 0;
+		}
+	})	
+}
+
+getCurrentCmd = function(){
+	var currSelected = mainForm.listview.getSelection();
+	return currSelected > 0? table.slice(listMatchedCmds[firstItemNo + currSelected - 1], 2, 4): null;
+}
+
+// 解析命令
+parseCmd = function(cmd, cliptext){
+	var isInternal = string.startWith(cmd[3], ':');
+	var cmdStr = isInternal? string.slice(cmd[3], 2): cmd[3];
+
+	if(string.indexOf(cmdStr, '%TOTALCMD%')) cmdStr = string.replace(cmdStr, '@%TOTALCMD%', totalCmdPath);
+	if(string.indexOf(cmdStr, '%EVERYTHING%')) cmdStr = string.replace(cmdStr, '@%EVERYTHING%', everythingPath);
+	if(string.indexOf(cmdStr, '%NIRCMD%')) cmdStr = string.replace(cmdStr, '@%NIRCMD%', nirCmdPath);
+	if(string.indexOf(cmdStr, '%WINCTL%')) cmdStr = string.replace(cmdStr, '@%WINCTL%', winCtlPath);
+	if(string.indexOf(cmdStr, '{%c}')){cliptext = !cliptext? win.clip.read(): cliptext; cmdStr = string.replace(cmdStr, '@{%c}', !cliptext? '': cliptext); };
+	if(string.indexOf(cmdStr, '{%wd}')) cmdStr = string.replace(cmdStr, '@{%wd}', tostring(lastActiveHwnd));
+	argv = string.cmdline(cmdStr);
+	isHideWnd = string.startWith(argv[0], '@');
+	cmdStr = isHideWnd? string.slice(argv[0], 2): argv[0];
+	argv = table.slice(argv, 1);
+	return cmdStr, argv, isInternal, isHideWnd;
+}
+
+// 启动进程
+processExecute = function(cmdStr,parameters,showCmd){
+	var prcs = process.execute(cmdStr, parameters, ,showCmd);
+	if(!prcs){
+		var errMsg = string.format('命令启动失败！- %s %s', cmdStr, tostring(parameters));
+		mainForm.tray.pop(errMsg, "QLaunch消息", 3);
+		if(isWriteLog) debug.logex.print(errMsg);
+	}else{
+		if(isWriteLog) debug.logex.print(string.format('命令启动成功！- %s %s', cmdStr, tostring(parameters)));
+	}
+}
+
+// 启动进程
+processExeCmd = function(cmdStr){
+	var prcs = process.popen.cmd(cmdStr);
+	if(!prcs){
+		var errMsg = string.format('命令启动失败！- %s', cmdStr);
+		mainForm.tray.pop(errMsg, "QLaunch消息", 3);
+		if(isWriteLog) debug.logex.print(errMsg);
+	}else{
+		if(isWriteLog) debug.logex.print(string.format('命令启动成功！- %s', cmdStr));
+		mainForm.msgbox(prcs.readAll(), string.format('QLaunch - execmd: %s', cmdStr));
+	}
+}
+
+// 执行命令
+runCmd = function(cmd, cliptext){
+	// 统计执行次数
+	var index, key, count = runTimes.find(cmd[1]);
+	runTimes.set(cmd[1], count + 1);
+
+	// 记录日志
+	if(isWriteLog) debug.logex.print("准备执行命令：" + string.join(cmd, '\t'));
+
+	var cmdStr, argv, isInternal, isHideWnd = parseCmd(cmd, cliptext);
+	if(isInternal){
+		select(cmdStr) {
+			case "quit" {
+				mainForm.close();
+			} case "reload" {
+				loadCmds(cmdFilePath);
+				mainForm.tray.pop('配置文件已重新加载！',"QLaunch消息");
+			} case "setclip" {
+				win.clip.write(string.args.join(argv));
+			} case "fileclip" {
+				win.clip.write(string.load(string.args.join(argv)));
+			} case "clearclip" {
+				win.clip.write("");
+			} case "open" {
+				processExecute(string.args.join(argv));
+			} case "execmd" {
+				processExeCmd(string.args.join(argv));
+			} case "encodeBase64" {
+				win.clip.write(crypt.bin.encodeBase64(win.clip.read()));
+			} case "decodeBase64" {
+				win.clip.write(crypt.bin.decodeBase64(win.clip.read()));
+			} case "formatJson" {
+				win.clip.write(web.json.stringify(web.json.parse(win.clip.read()),true));
+			}else{
+				var errMsg = '未知的内部命令：' + cmd[1];
+				mainForm.tray.pop(errMsg, "QLaunch消息");
+				if(isWriteLog) debug.logex.print(errMsg);
+			}
+		}
+	}else{
+		processExecute(cmdStr, string.args.join(argv), , !isHideWnd? 5: 0);
+	}
+}
+
+// :tcl :tcr 命令执行
+runTcGoto = function(left=true){
+	runInteralCmdForHotkey(left? 4: 5);
+}
+
+// :es 命令执行
+runEverythingSearch = function(){
+	runInteralCmdForHotkey(6);
+}
+
+// 快捷键命令执行逻辑
+runInteralCmdForHotkey = function(cmdId){
+    var cmd = getCurrentCmd();
+    if(cmd){
+        var cmdStr, argv, isInternal, isHideWnd = parseCmd(cmd);
+        if(!isInternal || cmdStr == 'setclip' || cmdStr == 'fileclip' || cmdStr == 'open'){
+	        var pathStr = !isInternal? io.fullpath(cmdStr): io.fullpath(string.args.join(argv));
+//	    	runCmd(listInternalCmds[cmdId], process.isExe(pathStr)? io.splitpath(pathStr).dir: pathStr);
+	    	runCmd(listInternalCmds[cmdId], pathStr);
+	    	showMainWindow(false);
+        }
+    }else if(cmdId == 6 && mainForm.edit.text != ""){
+	    runCmd(listInternalCmds[cmdId], mainForm.edit.text);
+	    showMainWindow(false);
+    }
+}
+
+// 将命令信息复制到剪贴板
+setCmdInfoToClip = function(idx){
+    var cmd = getCurrentCmd();
+    if(cmd){
+    	if(idx >= 1 && idx <= 3){
+    		win.clip.write(cmd[idx])
+    	} else {
+    		win.clip.write(string.join(cmd, '\t'));
+    	}
+    }
+	showMainWindow(false);
+}
+
+// 托盘信息显示命令定义
+showCmdDetail = function(){
+    var cmd = getCurrentCmd();
+    if(cmd){
+		mainForm.tray.pop(cmd[3], string.format("[%s]", cmd[1]));
+    }
+}
+
+// 保存统计数据
+saveRunTimes = function(){
+	var tlist = string.list();
+	for(i=1; #listAllCmds; 1){
+		if(runTimes[listAllCmds[i][2]] && tonumber(runTimes[listAllCmds[i][2]]) > 0){
+			tlist.set(listAllCmds[i][2], runTimes[listAllCmds[i][2]]);
+		}
+	}
+    tlist.save(runTimesFile);
+}
+
+
+/***********************************
+ * 主程序：初始化                  *
+ ***********************************/
+// 初始化日志
+initLogging();
+
+// 创建单例标识
+mainForm.atom(guid); 
+
+//移除列标题
+mainForm.listview.modifyStyle(,0x4000/*_LVS_NOCOLUMNHEADER*/)
+mainForm.listview.insertColumn("列标题3",35) 
+mainForm.listview.insertColumn("列标题2",190) 
+mainForm.listview.insertColumn("列标题1",272) 
+
+//开启双缓冲，显示更流畅
+mainForm.listview.enableDoubleBuffering();
+
+// 加载命令快捷定义文件
+loadCmds();
+
+// 注册shellhook
+var shellhook = win.util.shellhook(mainForm);
+
+// hook键盘
+var keyHook = key.hook()
+
+/***********************************
+ * 消息处理                        *
+ ***********************************/
+ // 实现双击 ctrl 键激活主界面的功能
+keyHook.proc = function(msg, vkcode, scancode){
+	select( msg ) { 
+		case 0x100/*_WM_KEYDOWN*/{
+			if(vkcode != 0xA2/*_VK_LCTRL*/ && vkcode != 0xA3/*_VK_RCTRL*/ && (::GetKeyState(0x11/*_VK_CTRL*/) & 0x8000)){
+				tmLastPressCtrl = 0;
+			}
+		}
+		case 0x101/*_WM_KEYUP*/{
+            if (vkcode == 0xA2/*_VK_LCTRL*/ || vkcode == 0xA3/*_VK_RCTRL*/) {
+				var tmCur = time.performance.tick();
+				var diffVal = tmCur - tmLastPressCtrl;
+				if(isWriteLog) debug.logex.print(string.format('截获 ctrl 键，间隔:%dms', diffVal));
+				if(diffVal > MIN_INTERVAL && diffVal < MAX_INTERVAL){
+					showMainWindow(!isMainFormShow);
+					tmLastPressCtrl = 0;
+				}else{
+					tmLastPressCtrl = tmCur;
+				}
+            }
+		}
+		else{
+			
+		}
+	}
+	//无返回值则继续调用默认回调函数
+}
+
+ mainForm.wndproc = function(hwnd,message,wParam,lParam){
+	select( message ) { 
+    	case 0x201/*_WM_LBUTTONDOWN*/{
+		    var ctrl = ::GetKeyState(0x11/*_VK_CTRL*/) & 0x8000;
+		    if(!ctrl){
+			    mainForm.hitCaption();
+		    }
+    	}
+    	case 0x202/*_WM_LBUTTONUP*/{
+    	}
+		case 0x205/*_WM_RBUTTONUP*/{
+			showPopMenu();
+		}
+		case 0x14/*_WM_ERASEBKGND*/{
+			// 避免因重绘背景导致窗口闪烁
+			return true;
+		}
+		else{
+			
+		}
+	}
+	//无返回值则继续调用默认回调函数
+}
+
+//自绘
+mainForm.listview.onnotify = function(id,code,ptr){ 
+	if( code == 0xFFFFFFF4/*_NM_CUSTOMDRAW*/ ){
+		var lvcd = mainForm.listview.getNotifyCustomDraw(code,ptr);
+		if( lvcd.nmcd.dwDrawStage == 0x10001/*_CDDS_ITEMPREPAINT*/){
+			return 0x20/*_CDRF_NOTIFYSUBITEMDRAW*/
+		}
+		elseif( lvcd.nmcd.dwDrawStage == 1/*_CDDS_PREPAINT*/ ){
+			return 0x20/*_CDRF_NOTIFYITEMDRAW*/;
+		}
+		elseif( lvcd.nmcd.dwDrawStage == ( 0x10001/*_CDDS_ITEMPREPAINT*/ | 0x20000/*_CDDS_SUBITEM*/) ){ 
+       		//注意这里 iSubItem 的索引自0开始( 其他函数通常自1开始 )
+			lvcd.clrText = gdi.RGB(147,199, 84);
+			lvcd.clrTextBk = gdi.RGB( 50, 50, 50);
+			lvcd.update()
+			return 0/*_CDRF_DODEFAULT*/
+		}
+	}
+}
+
+mainForm.listview.onSelChanged = function(selected,item,subItem,nmListView){
+	mainForm.edit.setFocus();
+}
+
+mainForm.listview.onSelMoveDown = function(count, isDown=true){
+	if(mainForm.listview.count > 0){
+		var currSelected = mainForm.listview.getSelection();
+		if(isDown){
+			if(currSelected + count <= mainForm.listview.count){
+				mainForm.listview.setSelected(currSelected + count);
+			}elseif(firstItemNo + count <= #listMatchedCmds && !(count == 1 && firstItemNo + currSelected > #listMatchedCmds)){
+				updateListview(math.min(firstItemNo + count, #listMatchedCmds - maxRows + 1), currSelected);
+			}else{
+				updateListview(1, 1);
+			}
+		}else{
+			if(currSelected - count >= 1){
+				mainForm.listview.setSelected(currSelected - count);
+			}elseif(firstItemNo > 1){
+				updateListview(math.max(1, firstItemNo - count), currSelected);
+			}else{
+				var start = math.max(1, #listMatchedCmds - maxRows + 1);
+				updateListview(start, #listMatchedCmds - start + 1);
+			}
+		}
+	}
+}
+
+// 响应 ESC 键
+mainForm.onCancel = function(){
+    showMainWindow(!isMainFormShow);
+	return true; 	
+}
+
+// 响应回车键
+mainForm.onOk = function(){ 
+	var cmd = getCurrentCmd();
+	if(cmd){
+		var shift = ::GetKeyState(0x10/*_VK_SHIFT*/) & 0x8000;
+		var ctrl = ::GetKeyState(0x11/*_VK_CTRL*/) & 0x8000;
+		if(ctrl) {
+			runTcGoto(!shift); //ctrl+enter ctrl+shift+enter
+		}else{
+			showMainWindow(false);
+			runCmd(cmd);
+		}
+	}
+	return true; 	
+}
+
+// 程序退出
+mainForm.onClose = function(hwnd,message,wParam,lParam){
+	saveRunTimes();
+    setAutoRun(autoRun != 0);
+    keyHook.close();
+}
+
+// 响应输入变化
+mainForm.edit.onChange = function(){ 
+	if(owner.onModified) owner.onModified(true);
+	matchCmds(mainForm.edit.text);
+	updateListview(1, 1);
+}
+
+mainForm.edit.wndproc = function(hwnd,message,wParam,lParam){
+	select( message ) { 
+		case 0x100/*_WM_KEYDOWN*/{
+		    var shift = ::GetKeyState(0x10/*_VK_SHIFT*/) & 0x8000;
+		    var ctrl = ::GetKeyState(0x11/*_VK_CTRL*/) & 0x8000;
+			select(wParam) {
+				case 0x26/*_VK_UP*/, 0x28/*_VK_DOWN*/ {
+					mainForm.listview.onSelMoveDown(1, wParam == 0x28);
+					return true;
+				}case 0x21/*_VK_PGUP*/, 0x22/*_VK_PGDN*/ {
+					mainForm.listview.onSelMoveDown(maxRows, wParam == 0x22);
+					return true;
+				}case 0x20/*_VK_SPACE*/ {
+					mainForm.onOk();
+					return true;
+				}case 0x70/*_VK_F1*/ {
+					showCmdDetail();
+					return true;
+				}case '0'#, '1'#, '2'#, '3'# { //ctrl + 0 ~ 3
+					if(ctrl) {
+						setCmdInfoToClip(wParam - '0'#);
+						return true;
+					}
+				}case 'L'#, 'R'# { // ctr+l ctrl+r 
+					if(ctrl) {
+						runTcGoto(wParam == 'L'#);
+						return true;
+					}
+				}case 'F'# { // ctr+f
+					if(ctrl) {
+						runEverythingSearch();
+						return true;
+					}
+				}else {
+				}
+			}
+		}
+		else{
+			
+		}
+	}
+	//无返回值则继续调用默认回调函数
+}
+
+mainForm.onTrayMessage = {
+	[0x205/*_WM_RBUTTONUP*/  ] = function(wParam){ 
+	    //弹出托盘菜单以前,一定要前置主窗口中,避免不点击菜单不会消失，父窗口隐藏也要这样做
+	    win.setForeground(mainForm.hwnd)
+	     
+		/*
+		下面创建托盘弹出菜单。
+		如果程序要开机启动到托盘，最好在这里创建菜单，在用户点击前不要创建菜单，
+		避免系统启动时 DPI 缩放前创建的菜单字体偏小（出现这情况的机率很小）。
+		如果不想重复创建菜单最好写到一个库里，然后在这里 import 即可避免上述问题。
+		*/
+		showPopMenu();
+	};
+	[0x202/*_WM_LBUTTONUP*/] = function(wParam){ 
+		showMainWindow(true); //显示窗口
+	};
+}
+
+shellhook.onShellHook=function(hshell,hwnd){ 
+	//判断钩子拦截到的消息类型
+    select(hshell ) {
+		case 0x8004/*_HSHELL_WINDOWACTIVATED*/{
+			if(hwnd != 0 && hwnd != mainForm.hwnd){
+				if(isMainFormShow) showMainWindow(false);
+				lastActiveHwnd = hwnd;
+			}
+		}
+    }	
+}
+
+/***********************************
+ * 主程序：消息循环                *
+ ***********************************/
+mainForm.enableDpiScaling();
+resizeWindow();
+// 计算窗口的新位置，使其居中
+win.setPos(mainForm.hwnd, 
+			winLeft >= 0? winLeft: (::GetSystemMetrics(0) - mainForm.width) / 2, 
+			winTop >= 0? winTop: (::GetSystemMetrics(1) - mainForm.height) / 2 - 100);
+mainForm.edit.setFocus();
+
+showMainWindow(false);
+
+// 设置系统托盘
+mainForm.tray = win.util.tray(mainForm);
+mainForm.tray.tip = "QLaunch"
+mainForm.tray.pop('QLaunch已经启动了，双击ctrl键可以激活命令面板！',"QLaunch启动消息");
+
+return win.loopMessage();
