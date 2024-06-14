@@ -47,6 +47,7 @@ var winTop = ini.read("Window", "WinTop")? tonumber(ini.read("Window", "WinTop")
 
 var lastActiveHwnd = null;
 var isMainFormShow = true;
+var isCalculaterShow = false;
 var listInternalCmds = {
 	[1] = {":quit", "退出QLaunch应用", ":quit"},
 	[2] = {":reload", "重新加载配置文件", ":reload"},
@@ -202,6 +203,17 @@ updateListview = function(start, sel){
 	}
 }
 
+// 显示提示信息窗口
+showPopInfo = function(title, content){
+	if(!frmShowInfo) frmShowInfo = mainForm.loadForm("\dlg\frmShowInfo.aardio");
+	frmShowInfo.text = title;
+	frmShowInfo.edit.text = "";
+	frmShowInfo.edit.print(content);
+	frmShowInfo.show(); 
+	win.setForeground(frmShowInfo.hwnd);		
+}
+
+
 // 加载命令配置文件
 loadCmds = function(){
 	runTimes.load(runTimesFile);
@@ -318,7 +330,7 @@ processExeCmd = function(cmdStr){
 		if(isWriteLog) debug.logex.print(errMsg);
 	}else{
 		if(isWriteLog) debug.logex.print(string.format('命令启动成功！- %s', cmdStr));
-		mainForm.msgbox(prcs.readAll(), string.format('QLaunch - execmd: %s', cmdStr));
+		showPopInfo(string.format('QLaunch - execmd: %s', cmdStr), prcs.readAll());
 	}
 }
 
@@ -574,6 +586,8 @@ mainForm.onOk = function(){
 			showMainWindow(false);
 			runCmd(cmd);
 		}
+	}else if(string.startWith(mainForm.edit.text, '#')){
+		mainForm.onCalculate();
 	}
 	return true; 	
 }
@@ -584,6 +598,29 @@ mainForm.onClose = function(hwnd,message,wParam,lParam){
     setAutoRun(autoRun != 0);
     keyHook.close();
 }
+
+mainForm.onCalculate = function(){
+	try{
+		var expression = string.slice(mainForm.edit.text, 2);
+		var result = eval(expression);
+		isCalculaterShow = true;
+		showPopInfo("QLaunch - 计算器", string.format("%s = %s", expression, result));
+    }
+    catch(e){
+        mainForm.edit.showErrorTip(mainForm.text, "请输入正确的数值或表达式");
+        mainForm.edit.setFocus(0,-1);
+    }
+}
+
+
+mainForm.onFormShowInfoClose = function(){
+	if(isCalculaterShow){
+		activeWindow(mainForm.hwnd);
+		mainForm.edit.setFocus();
+		isCalculaterShow = false;
+	}
+}
+
 
 // 响应输入变化
 mainForm.edit.onChange = function(){ 
