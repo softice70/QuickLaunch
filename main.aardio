@@ -98,6 +98,11 @@ initLogging = function(){
 	}
 }
 
+// 判断文件是否存在
+isPathExists = function(path){
+	return ::Kernel32.GetFileAttributes(path) != -1;
+}
+
 // 设置开机启动
 setAutoRun = function(auto){
 	var appPath = io.fullpath("\QLaunch.exe");
@@ -369,7 +374,7 @@ runCmd = function(cmd, cliptext){
 				win.clip.write(web.json.stringify(web.json.parse(win.clip.read()),true));
 			}else{
 				var errMsg = '未知的内部命令：' + cmd[1];
-				mainForm.tray.pop(errMsg, "QLaunch消息");
+				mainForm.tray.pop(errMsg, "QLaunch消息", 3);
 				if(isWriteLog) debug.logex.print(errMsg);
 			}
 		}
@@ -394,9 +399,15 @@ runInteralCmdForHotkey = function(cmdId){
     if(cmd){
         var cmdStr, argv, isInternal, isHideWnd = parseCmd(cmd);
         if(!isInternal || cmdStr == 'setclip' || cmdStr == 'fileclip' || cmdStr == 'open'){
-	        var pathStr = !isInternal? io.fullpath(cmdStr): io.fullpath(string.args.join(argv));
-//	    	runCmd(listInternalCmds[cmdId], process.isExe(pathStr)? io.splitpath(pathStr).dir: pathStr);
-	    	runCmd(listInternalCmds[cmdId], pathStr);
+            var argvStr = #argv > 0? argv[1]: "";
+	        var pathStr = !isInternal? (io.localpath(cmdStr): cmdStr): (io.localpath(argvStr): argvStr);
+	        if(io.exist(pathStr)){
+	    		runCmd(listInternalCmds[cmdId], pathStr);
+	    	} else {
+				var errMsg = '文件或路径不存在：' + pathStr;
+				mainForm.tray.pop(errMsg, "QLaunch消息", 3);
+				if(isWriteLog) debug.logex.print(errMsg);
+	    	}
 	    	showMainWindow(false);
         }
     }else if(cmdId == 6 && mainForm.edit.text != ""){
