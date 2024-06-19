@@ -327,7 +327,7 @@ processExecute = function(cmdStr,parameters,showCmd){
 }
 
 // 启动进程
-processExeCmd = function(cmdStr){
+processExeCmd = function(cmdStr, isHideWnd){
 	var prcs = process.popen.cmd(cmdStr);
 	if(!prcs){
 		var errMsg = string.format('命令启动失败！- %s', cmdStr);
@@ -335,7 +335,7 @@ processExeCmd = function(cmdStr){
 		if(isWriteLog) debug.logex.print(errMsg);
 	}else{
 		if(isWriteLog) debug.logex.print(string.format('命令启动成功！- %s', cmdStr));
-		showPopInfo(string.format('QLaunch - execmd: %s', cmdStr), prcs.readAll());
+		if(!isHideWnd) showPopInfo(string.format('QLaunch - execmd: %s', cmdStr), prcs.readAll());
 	}
 }
 
@@ -365,7 +365,7 @@ runCmd = function(cmd, cliptext){
 			} case "open" {
 				processExecute(string.args.join(argv));
 			} case "execmd" {
-				processExeCmd(string.args.join(argv));
+				processExeCmd(string.args.join(argv), isHideWnd);
 			} case "encodeBase64" {
 				win.clip.write(crypt.bin.encodeBase64(win.clip.read()));
 			} case "decodeBase64" {
