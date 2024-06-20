@@ -63,6 +63,7 @@ var listAllCmds = {};
 var listMatchedCmds = {};
 var runTimes = string.list();
 var firstItemNo = -1; // 当前显示的第一个项目序号
+var currSelected = -1; // 当前选择项目的行号
 var tmLastPressCtrl = 0;
 var MIN_INTERVAL = 120;
 var MAX_INTERVAL = 350;
@@ -78,7 +79,7 @@ if( mutex.conflict ){
 mainForm = win.form(text="QLaunch";right=499;bottom=299;bgcolor=6316128;border="none";exmode="toolwindow";max=false;mode="popup";sysmenu=false;title=false;topmost=1)
 mainForm.add(
 edit={cls="edit";left=30;top=8;right=446;bottom=30;bgcolor=6316128;color=16775984;dl=1;dr=1;dt=1;font=LOGFONT(h=-14;name='微软雅黑');z=2};
-listview={cls="listview";left=0;top=36;right=501;bottom=301;bgcolor=3289650;color=16777215;dl=1;dr=1;dt=1;font=LOGFONT(h=-15;name='FiraCode Nerd Font Mono');fullRow=1;msel=false;z=3};
+listview={cls="listview";left=0;top=36;right=501;bottom=301;asel=false;bgcolor=3289650;color=16777215;dl=1;dr=1;dt=1;font=LOGFONT(h=-15;name='FiraCode Nerd Font Mono');fullRow=1;msel=false;z=3};
 plusEditBg={cls="plus";left=0;top=0;right=501;bottom=37;background="\res\softice.png";z=1}
 )
 /*}}*/
@@ -191,6 +192,12 @@ resizeWindow = function(){
     mainForm.height = mainForm.listview.height + mainForm.plusEditBg.height;
 }
 
+setSelected = function(row){
+	currSelected = row;
+	mainForm.listview.redraw();
+	// mainForm.listview.setSelected(row);
+}
+
 // 更新 listview
 updateListview = function(start, sel){
 	if(start != firstItemNo){
@@ -198,7 +205,7 @@ updateListview = function(start, sel){
 		if(#listMatchedCmds > 0){
 			var items = table.slice(listMatchedCmds, start, math.min(#listMatchedCmds, start + maxRows - 1));
 			mainForm.listview.replaceItems(items);
-			mainForm.listview.setSelected(math.min(sel, mainForm.listview.count));
+			setSelected(math.min(sel, mainForm.listview.count));
 			firstItemNo = start;
 		}else{
 			mainForm.listview.clear();
@@ -292,7 +299,6 @@ sortCmds = function(cmds){
 }
 
 getCurrentCmd = function(){
-	var currSelected = mainForm.listview.getSelection();
 	return currSelected > 0? table.slice(listMatchedCmds[firstItemNo + currSelected - 1], 2, 4): null;
 }
 
@@ -536,31 +542,43 @@ mainForm.listview.onnotify = function(id,code,ptr){
 	if( code == 0xFFFFFFF4/*_NM_CUSTOMDRAW*/ ){
 		var lvcd = mainForm.listview.getNotifyCustomDraw(code,ptr);
 		if( lvcd.nmcd.dwDrawStage == 0x10001/*_CDDS_ITEMPREPAINT*/){
-			return 0x20/*_CDRF_NOTIFYSUBITEMDRAW*/
+			if(lvcd.nmcd.dwItemSpec + 1 == currSelected){
+				lvcd.clrText = gdi.RGB(0, 0, 0);
+				lvcd.clrTextBk = gdi.RGB(0, 225, 225);
+			}else{
+				lvcd.clrText = gdi.RGB(147,199, 84);
+				lvcd.clrTextBk = gdi.RGB( 50, 50, 50);
+			}
+			lvcd.update()
+			return 0/*_CDRF_DODEFAULT*/
 		}
 		elseif( lvcd.nmcd.dwDrawStage == 1/*_CDDS_PREPAINT*/ ){
 			return 0x20/*_CDRF_NOTIFYITEMDRAW*/;
 		}
-		elseif( lvcd.nmcd.dwDrawStage == ( 0x10001/*_CDDS_ITEMPREPAINT*/ | 0x20000/*_CDDS_SUBITEM*/) ){ 
-       		//注意这里 iSubItem 的索引自0开始( 其他函数通常自1开始 )
-			lvcd.clrText = gdi.RGB(147,199, 84);
-			lvcd.clrTextBk = gdi.RGB( 50, 50, 50);
-			lvcd.update()
-			return 0/*_CDRF_DODEFAULT*/
-		}
 	}
 }
 
-mainForm.listview.onSelChanged = function(selected,item,subItem,nmListView){
+mainForm.listview.onClick = function(item, subItem, nmListView){
+	setSelected(item);
 	mainForm.edit.setFocus();
 }
 
+mainForm.listview.onDoubleClick = function(item, subItem, nmListView){
+	setSelected(item);
+	mainForm.onOk();
+}
+
+/*
+mainForm.listview.onSelChanged = function(selected,item,subItem,nmListView){
+	mainForm.edit.setFocus();
+}
+*/
+
 mainForm.listview.onSelMoveDown = function(count, isDown=true){
 	if(mainForm.listview.count > 0){
-		var currSelected = mainForm.listview.getSelection();
 		if(isDown){
 			if(currSelected + count <= mainForm.listview.count){
-				mainForm.listview.setSelected(currSelected + count);
+				setSelected(currSelected + count);
 			}elseif(firstItemNo + count <= #listMatchedCmds && !(count == 1 && firstItemNo + currSelected > #listMatchedCmds)){
 				updateListview(math.min(firstItemNo + count, #listMatchedCmds - maxRows + 1), currSelected);
 			}else{
@@ -568,7 +586,7 @@ mainForm.listview.onSelMoveDown = function(count, isDown=true){
 			}
 		}else{
 			if(currSelected - count >= 1){
-				mainForm.listview.setSelected(currSelected - count);
+				setSelected(currSelected - count);
 			}elseif(firstItemNo > 1){
 				updateListview(math.max(1, firstItemNo - count), currSelected);
 			}else{

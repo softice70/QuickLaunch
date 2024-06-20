@@ -5,7 +5,7 @@ import debug.logex;
 var frmShowInfo = win.form(text="QLaunch提示信息";right=423;bottom=259;border="dialog frame";exmode="toolwindow";max=false;min=false;mode="popup";sysmenu=false)
 frmShowInfo.add(
 button={cls="button";text="确定";left=319;top=227;right=394;bottom=254;z=2};
-edit={cls="edit";left=2;top=2;right=422;bottom=222;edge=1;multiline=1;readonly=1;z=1}
+edit={cls="edit";left=2;top=2;right=422;bottom=222;edge=1;hscroll=1;multiline=1;readonly=1;vscroll=1;z=1}
 )
 /*}}*/
 
