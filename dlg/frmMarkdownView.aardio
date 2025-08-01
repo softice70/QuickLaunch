@@ -1,0 +1,38 @@
+import win.ui;
+import web.form.simpleMarkdown;
+import debug;
+import debug.logex;
+/*DSG{{*/
+var frmMdView = win.form(text="Markdown信息";right=880;bottom=640;clipch=1;composited=1;edge=1;max=false;min=false)
+frmMdView.add()
+/*}}*/
+
+/* 创建 WebView 控件占满整个客户区 */
+var wb = web.form.simpleMarkdown(frmMdView);
+
+frmMdView.load = function(fileMd){
+	// 处理文件路径中包含空格的时候，路径不可以写在单双引号内，没有空格则可以
+	var patchedFileMd = string.indexOf(fileMd, ' ')? string.trim(string.trim(fileMd, '"'), "'"): fileMd;
+	// 加载Markdown文件并简单处理
+	var markdownText = string.load(patchedFileMd);
+	/* 把生成的 HTML 装进 WebView；支持本地图片/样式 */
+	wb.setMarkdown(markdownText);
+}
+
+frmMdView.onClose = function(){
+	..mainForm.onFormMdViewClose();
+}
+
+frmMdView.onCancel = function(){
+	frmMdView.close();
+	return true; 	
+}
+
+frmMdView.onOk = function(){
+	frmMdView.close();
+	return true; 	
+}
+
+frmMdView.show(false);
+win.loopMessage();
+return frmMdView;

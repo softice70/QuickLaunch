@@ -1,3 +1,4 @@
+import win;
 import win.ui;
 import win.ui.atom;
 import win.ui.menu;
@@ -15,6 +16,7 @@ import string;
 import string.cmdline;
 import string.conv.pinyin;
 import string.list;
+import key;
 import key.hook;
 import key.hotkey;
 import key.ime;
@@ -22,6 +24,7 @@ import time.performance;
 import fsys.ini;
 import crypt.bin;
 import web.json;
+import inet.url;
 import debug;
 import debug.logex;
 
@@ -33,7 +36,8 @@ var dpiScale = gdi.getDpiScale();
 var guid = "d2b80641-aa90-be4c-4ee2-5963560a8163";
 var runTimesFile = "\QLaunch.data";
 var ini = fsys.ini("\QLaunch.ini");
-var cmdFilePath = ini.read("Config", "CmdFile")? ini.read("Config", "CmdFile"): "\cmds.txt";
+var cmdFilePath = ini.read("Config", "CmdFile")? ini.read("Config", "CmdFile"): "\cmds.conf";
+var kvFilePath = ini.read("Config", "KvFile")? ini.read("Config", "KvFile"): "\kv.conf";
 var maxRows = ini.read("Config", "MaxRows")? tonumber(ini.read("Config", "MaxRows")): 10;
 var rowHeight = ini.read("Config", "RowHeight")? math.floor(tonumber(ini.read("Config", "RowHeight")) * dpiScale): math.floor(23.0 * dpiScale); // 每行的高度
 var autoRun = ini.read("Config", "AutoRun")? tonumber(ini.read("Config", "AutoRun")): 0;
@@ -46,6 +50,7 @@ var winLeft = ini.read("Window", "WinLeft")? tonumber(ini.read("Window", "WinLef
 var winTop = ini.read("Window", "WinTop")? tonumber(ini.read("Window", "WinTop")): -1;
 
 var lastActiveHwnd = null;
+var frmMdView = null;
 var isMainFormShow = true;
 var isCalculaterShow = false;
 var listInternalCmds = {
@@ -58,35 +63,41 @@ var listInternalCmds = {
 	[7] = {":encodeBase64", "对剪贴板内容进行Base64编码", ":encodeBase64"},
 	[8] = {":decodeBase64", "对剪贴板内容进行Base64解码", ":decodeBase64"},
 	[9] = {":formatJson", "对剪贴板内的Json串进行格式化", ":formatJson"},
+	[10] = {":esFolder", "Everything搜索文件夹", "%EVERYTHING% -s {%c} -filter 文件夹"},
+	[11] = {":esExe", "Everything搜索可执行文件", "%EVERYTHING% -s {%c} -filter 可执行文件"},
+	[12] = {":esZip", "Everything搜索压缩文件", "%EVERYTHING% -s {%c} -filter 压缩文件"},
+	[13] = {":esDoc", "Everything搜索文档", "%EVERYTHING% -s {%c} -filter 文档"},
+	[14] = {":esImg", "Everything搜索图片", "%EVERYTHING% -s {%c} -filter 图片"},
+	[15] = {":esVideo", "Everything搜索视频", "%EVERYTHING% -s {%c} -filter 视频"},
+	[16] = {":esAudio", "Everything搜索音频", "%EVERYTHING% -s {%c} -filter 音频"},
+	[17] = {":urlEncode", "对剪贴板内容进行url编码", ":urlEncode"},
+	[18] = {":urlDecode", "对剪贴板内容进行url解码", ":urlDecode"},
+	[19] = {":2txt", "将剪贴板内容转成纯文本并粘贴", ":2txt"},
+	[20] = {":kv:", "进行k-v转换", ":kv"},
+	[21] = {":es:", "Everything搜索", "%EVERYTHING% -s "},
+	[22] = {":help", "QLaunch帮助", ":mdview \README.md"},
 }
 var listAllCmds = {};
 var listMatchedCmds = {};
-var runTimes = string.list();
+var listKvCmds = {};
+var runTimes = string.list(); // 命令运行次数，用于命令列表按使用频度排序
 var firstItemNo = -1; // 当前显示的第一个项目序号
 var currSelected = -1; // 当前选择项目的行号
 var tmLastPressCtrl = 0;
 var MIN_INTERVAL = 120;
 var MAX_INTERVAL = 350;
-
-// 单例检测
-var mutex = process.mutex(guid) 
-if( mutex.conflict ){
-    var atom,hwndConflict = win.ui.atom.find(guid)
-    if( hwndConflict ) win.setForeground(hwndConflict);
-    return;
-}
 /*DSG{{*/
-mainForm = win.form(text="QLaunch";right=499;bottom=299;bgcolor=6316128;border="none";exmode="toolwindow";max=false;mode="popup";sysmenu=false;title=false;topmost=1)
+mainForm = win.form(text="QLaunch";right=499;bottom=299;bgcolor=0x606060;border="none";exmode="toolwindow";max=false;mode="popup";sysmenu=false;title=false;topmost=1)
 mainForm.add(
-edit={cls="edit";left=30;top=8;right=446;bottom=30;bgcolor=6316128;color=16775984;dl=1;dr=1;dt=1;font=LOGFONT(h=-14;name='微软雅黑');z=2};
-listview={cls="listview";left=0;top=36;right=501;bottom=301;asel=false;bgcolor=3289650;color=16777215;dl=1;dr=1;dt=1;font=LOGFONT(h=-15;name='FiraCode Nerd Font Mono');fullRow=1;msel=false;z=3};
+edit={cls="edit";left=30;top=8;right=446;bottom=30;bgcolor=0x606060;color=0x75A4E1;dl=1;dr=1;dt=1;font=LOGFONT(h=-14;name='微软雅黑';weight=700);z=2};
+listview={cls="listview";left=0;top=36;right=501;bottom=301;asel=false;bgcolor=0x323232;color=0xFFFFFF;dl=1;dr=1;dt=1;font=LOGFONT(h=-15;name='FiraCode Nerd Font Mono');fullRow=1;msel=false;z=3};
 plusEditBg={cls="plus";left=0;top=0;right=501;bottom=37;background="\res\softice.png";z=1}
 )
 /*}}*/
 
-/*
- * 函数
-*/
+/***********************************
+ * 函数及消息处理                   *
+ ***********************************/
 // 初始化日志
 initLogging = function(){
 	if(isWriteLog){
@@ -104,6 +115,252 @@ isPathExists = function(path){
 	return ::Kernel32.GetFileAttributes(path) != -1;
 }
 
+// 加载命令，支持 !include 命令包含其他命令文件
+loadCmds = function(){
+	runTimes.load(runTimesFile);
+	table.clear(listAllCmds);
+	// 先加入内部命令列表
+	for(i=1; #listInternalCmds; 1){
+		addCmds(listInternalCmds[i], false);
+	}
+	var cmdFiles = {cmdFilePath};
+	while(#cmdFiles != 0){
+		readCmdFile(cmdFiles);
+	}
+	if(isWriteLog) debug.logex.print(string.format('共加载 %d 条命令', #listAllCmds));
+}
+
+// 读取命令配置文件，行首以分号或井号开头标示注释行
+readCmdFile = function(cmdFiles){
+	var cmdFile = string.trim(table.pop(cmdFiles));
+	// 读入外部命令列表文件
+	for line in io.lines(cmdFile){
+		line = string.trim(line)
+		if(string.len(line) > 0){
+			if(string.startWith(line, '!include ')){
+				var pathFile = string.replace(string.slice(line, 10), '\"', '');
+				table.push(cmdFiles, pathFile);
+			}else if(!string.startWith(line, ';') && !string.startWith(line, '#')){
+				cmd = string.split(line, '\t');
+				addCmds(cmd, false);
+			}
+		}
+	}
+}
+
+// 添加命令，并将使用逗号分隔的别名复制成多个单条命令添加到指定命令列表
+addCmds = function(cmd, isKvCmd){
+	cmdkeys = string.split(cmd[1], ',');
+	for(i=1; #cmdkeys; 1){
+		cmd[1] = cmdkeys[i];
+		addOneCmd(cmd, isKvCmd? listKvCmds: listAllCmds);
+	}
+}
+
+/* 
+ * 向指定列表添加单条命令
+ * 命令表的数据：
+ * 1 - 序号
+ * 2 - 命令名称，key
+ * 3 - 命令描述，disc
+ * 4 - 执行指令
+ * 5 - 命令名称 + 命令描述，用于匹配
+ * 6 - 命令描述的拼音串，用于匹配
+*/
+addOneCmd = function(oneCmd, listCmds){
+	if(!runTimes.find(oneCmd[1])){
+		runTimes.set(oneCmd[1], 0);
+	}
+	var newCmd = table.clone(oneCmd);
+	var strKey = string.lower(oneCmd[1]);
+	var disc = string.lower(oneCmd[2]);
+	var discPinYin = string.conv.pinyin(disc, "");
+	table.push(newCmd, strKey + ' ' + disc);
+	table.push(newCmd, (type(discPinYin) == "string"? discPinYin: ''));
+	table.insert(newCmd, #listCmds + 1);
+	table.push(listCmds, newCmd);
+}
+
+// 加载key-value配置文件，支持 !include 命令包含其他k-v文件
+loadKvs = function(){
+	table.clear(listKvCmds);
+	var kvFiles = {kvFilePath};
+	while(#kvFiles != 0){
+		readKvFile(kvFiles);
+	}
+	if(isWriteLog) debug.logex.print(string.format('共加载 %d 条K-V项', #listKvCmds));
+}
+
+// 读取k-v配置文件，行首以分号或井号开头标示注释行
+readKvFile = function(kvFiles){
+	var kvFile = string.trim(table.pop(kvFiles));
+	// 读入k-v列表文件
+	for line in io.lines(kvFile){
+		line = string.trim(line);
+		if(string.len(line) > 0){
+			if(string.startWith(line, '!include ')){
+				var pathFile = string.trim(string.replace(string.slice(line, 10), '\"', ''));
+				table.push(kvFiles, pathFile);
+			}else if(!string.startWith(line, ';') && !string.startWith(line, '#')){
+				kv = string.split(line, '\t');
+				cmd = #kv > 2? {kv[1], kv[2], ":setclip " + kv[3]}: {kv[1], kv[2], ":setclip " + kv[2]};
+				addCmds(cmd, true);
+			}
+		}
+	}
+}
+
+/*
+ * 匹配命令
+ * 支持搜索：命令名称 + 命令描述、命令描述的拼音及k-v搜索
+*/
+matchCmds = function(text){
+	table.clear(listMatchedCmds);
+	var strKey, searchFieldId, listSrcCmds;
+	if(string.startWith(text, ':es:')){ // everything搜索
+		var cmd = table.clone(listInternalCmds[21]);
+		var text = string.trim(string.slice(text, 5));
+		cmd[2] = string.len(text) > 0? cmd[2] + ':' + text: '请输入Everything搜索内容';
+		cmd[3] = string.len(text) > 0? cmd[3] + text: cmd[3];
+		table.push(listMatchedCmds, cmd);
+		table.insert(listMatchedCmds[1], 1);
+	}else if(string.startWith(text, ':py:')){ // 拼音搜索
+		strKey = string.lower(string.trim(string.slice(text, 5)));
+		listSrcCmds = listAllCmds;
+		searchFieldId = 6;
+	}else if(string.startWith(text, ':kv:')){ // k-v搜索
+		strKey = string.lower(string.trim(string.slice(text, 5)));
+		listSrcCmds = listKvCmds;
+		searchFieldId = 5;
+	}else{
+		strKey = string.lower(string.trim(text));
+		listSrcCmds = listAllCmds;
+		searchFieldId = 5;
+	}
+	if(#listMatchedCmds == 0 && string.len(strKey) > 0){
+		for(i=1; #listSrcCmds; 1){
+			if(string.indexOf(string.lower(listSrcCmds[i][searchFieldId]), strKey)){
+				var cmd = table.slice(listSrcCmds[i], 2, 4);
+				table.push(listMatchedCmds, cmd);
+			}
+		}
+		sortCmds(listMatchedCmds);
+		for(i=1; #listMatchedCmds; 1){
+			table.insert(listMatchedCmds[i], i);
+		}
+	}
+	firstItemNo = -1;
+}
+
+// 命令排序
+sortCmds = function(cmds){
+	table.sort(cmds, function(next){
+		if(runTimes[owner[1]] !== null && runTimes[next[1]] !== null){
+			if(tonumber(runTimes[owner[1]]) > tonumber(runTimes[next[1]])){
+				return true;
+			}elseif(tonumber(runTimes[owner[1]]) < tonumber(runTimes[next[1]])){
+				return false;
+			}else{
+				return string.cmp(owner[1], next[1]) < 0;
+			}
+		}else{
+			return string.cmp(owner[1], next[1]) < 0;
+		}
+	})	
+}
+
+getCurrentCmd = function(){
+	return currSelected > 0? table.slice(listMatchedCmds[firstItemNo + currSelected - 1], 2, 4): null;
+}
+
+// 解析命令
+parseCmd = function(cmd, cliptext){
+	var isInternal = string.startWith(cmd[3], ':');
+	var cmdStr = isInternal? string.slice(cmd[3], 2): cmd[3];
+	
+	if(string.indexOf(cmdStr, '%TOTALCMD%')) cmdStr = string.replace(cmdStr, '@%TOTALCMD%', totalCmdPath);
+	if(string.indexOf(cmdStr, '%EVERYTHING%')) cmdStr = string.replace(cmdStr, '@%EVERYTHING%', everythingPath);
+	if(string.indexOf(cmdStr, '%NIRCMD%')) cmdStr = string.replace(cmdStr, '@%NIRCMD%', nirCmdPath);
+	if(string.indexOf(cmdStr, '%WINCTL%')) cmdStr = string.replace(cmdStr, '@%WINCTL%', winCtlPath);
+	if(string.indexOf(cmdStr, '{%c}')){cliptext = !cliptext? win.clip.read(): cliptext; cmdStr = string.replace(cmdStr, '@{%c}', !cliptext? '': cliptext); };
+	if(string.indexOf(cmdStr, '{%wd}')) cmdStr = string.replace(cmdStr, '@{%wd}', tostring(lastActiveHwnd));
+	argv = string.cmdline(cmdStr);
+	isHideWnd = string.startWith(argv[0], '@');
+	cmdStr = isHideWnd? string.slice(argv[0], 2): argv[0];
+	argv = table.slice(argv, 1);
+	return cmdStr, argv, isInternal, isHideWnd;
+}
+
+// 执行命令
+runCmd = function(cmd, cliptext){
+	// 统计执行次数
+	var index, strKey, count = runTimes.find(cmd[1]);
+	runTimes.set(cmd[1], count + 1);
+
+	// 记录日志
+	if(isWriteLog) debug.logex.print("准备执行命令：" + string.join(cmd, '\t'));
+
+	var cmdStr, argv, isInternal, isHideWnd = parseCmd(cmd, cliptext);
+	if(isInternal){
+		select(cmdStr) {
+			case "quit" {
+				mainForm.close();
+			} case "reload" {
+				loadCmds();
+				loadKvs();
+				mainForm.tray.pop('配置文件已重新加载！',"QLaunch消息");
+			} case "setclip" {
+				text = table.len(argv) == 1? argv[1]: string.args.join(argv);
+				// replace 函数中在标示匹配模式时，尽量使用双引号或反引号，注意下面的写法
+				text = string.replace(string.replace(text, `\%\\n\%`, '\n'), "\%\\t\%", '\t')
+				win.clip.write(text);
+				key.combine("SHIFT", "INSERT"); 
+			} case "fileclip" {
+				win.clip.write(string.load(string.args.join(argv)));
+			} case "clearclip" {
+				win.clip.write("");
+			} case "showfile" {
+				showPopInfo(string.load(string.args.join(argv)));
+			} case "mdview" {
+				showMdView(string.args.join(argv));
+			} case "msgbox" {
+				text = table.len(argv) == 1? argv[1]: string.args.join(argv);
+				// replace 函数中在标示匹配模式时，尽量使用双引号或反引号，注意下面的写法
+				text = string.replace(string.replace(text, `\%\\n\%`, '\n'), "\%\\t\%", '\t')
+				showPopInfo("信息", text);
+			} case "open" {
+				processExecute(string.args.join(argv));
+			} case "execmd" {
+				processExeCmd(string.args.join(argv), isHideWnd);
+			} case "exeps" {
+				processExePs(argv[1], table.slice(argv, 2), isHideWnd);
+			} case "encodeBase64" {
+				showPopInfo("encodeBase64", crypt.bin.encodeBase64(win.clip.read()));
+			} case "decodeBase64" {
+				showPopInfo("decodeBase64", crypt.bin.decodeBase64(win.clip.read()));
+			} case "urlEncode" {
+				showPopInfo("urlEncode", inet.url.encode(win.clip.read()));
+			} case "urlDecode" {
+				showPopInfo("urlDecode", inet.url.decode(win.clip.read()));
+			} case "2txt" {
+				txt = win.clip.read()
+				if(txt){
+					win.clip.write(txt)
+					key.combine("CTRL","V"); 
+				}
+			} case "formatJson" {
+				win.clip.write(web.json.stringify(web.json.parse(win.clip.read()),true));
+			}else{
+				var errMsg = '未知的内部命令：' + cmd[1];
+				mainForm.tray.pop(errMsg, "QLaunch消息", 3);
+				if(isWriteLog) debug.logex.print(errMsg);
+			}
+		}
+	}else{
+		processExecute(cmdStr, string.args.join(argv), , !isHideWnd? 5: 0);
+	}
+}
+
 // 设置开机启动
 setAutoRun = function(auto){
 	var appPath = io.fullpath("\QLaunch.exe");
@@ -111,8 +368,12 @@ setAutoRun = function(auto){
 	var reg = win.reg(startupKeyPath);
 	if(auto){
 		reg.setValue("QLaunch", appPath);
+		// 记录日志
+		if(isWriteLog) debug.logex.print("设置了开机启动项：" + appPath);
 	}else{
 		reg.delValue("QLaunch"); //删除指定的值
+		// 记录日志
+		if(isWriteLog) debug.logex.print("取消了开机启动项");
 	}
 	reg.close();
 }
@@ -147,6 +408,7 @@ showPopMenu = function(){
 	mainForm.popmenu.close();
 }
 
+// 激活窗口
 activeWindow = function(hwnd){
 	if (win.isIconic(hwnd)) win.show(hwnd, 9/*_SW_RESTORE*/);
 
@@ -192,6 +454,7 @@ resizeWindow = function(){
     mainForm.height = mainForm.listview.height + mainForm.plusEditBg.height;
 }
 
+// 设置列表的选择项
 setSelected = function(row){
 	currSelected = row;
 	mainForm.listview.redraw();
@@ -225,167 +488,59 @@ showPopInfo = function(title, content){
 	win.setForeground(frmShowInfo.hwnd);		
 }
 
-
-// 加载命令配置文件
-loadCmds = function(){
-	runTimes.load(runTimesFile);
-	table.clear(listAllCmds);
-	for(i=1; #listInternalCmds; 1){
-		addCmds(listInternalCmds[i]);
-	}
-	for line in io.lines(cmdFilePath){
-		addCmds(string.split(line, '\t'));
-	}
+// 显示提示信息窗口
+showMdView = function(fileMd){
+	showMainWindow(false);
+	closeMdView();
+	frmMdView = mainForm.loadForm("\dlg\frmMarkdownView.aardio");
+	frmMdView.load(fileMd);
+	frmMdView.show(); 
+	win.setForeground(frmMdView.hwnd);
+	lastActiveHwnd = frmMdView.hwnd;
 }
 
-// 添加命令
-addCmds = function(oneCmd){
-	if(!string.startWith(oneCmd[1], ';') && !string.startWith(oneCmd[1], '#')){
-		if(!runTimes.find(oneCmd[1])){
-			runTimes.set(oneCmd[1], 0);
-		}
-		var newCmd = table.clone(oneCmd);
-		var key = string.lower(oneCmd[1]);
-		var disc = string.lower(oneCmd[2]);
-		var discPinYin = string.conv.pinyin(disc, "");
-		table.push(newCmd, key + ' ' + disc);
-		table.push(newCmd, (type(discPinYin) == "string"? discPinYin: ''));
-		table.insert(newCmd, #listAllCmds + 1);
-		table.push(listAllCmds, newCmd);
-	}
-}
-
-// 匹配命令
-matchCmds = function(text){
-	table.clear(listMatchedCmds);
-	var key, searchFieldId;
-	if(string.startWith(text, ':py:')){ // 拼音搜索
-		key = string.lower(string.trim(string.slice(text, 5)));
-		searchFieldId = 6;
-	}else{
-		key = string.lower(string.trim(text));
-		searchFieldId = 5;
-	}
-	if(string.len(key) > 0){
-		for(i=1; #listAllCmds; 1){
-			if(string.indexOf(string.lower(listAllCmds[i][searchFieldId]), key)){
-				var cmd = table.slice(listAllCmds[i], 2, 4);
-				table.push(listMatchedCmds, cmd);
-			}
-		}
-		sortCmds(listMatchedCmds);
-		for(i=1; #listMatchedCmds; 1){
-			table.insert(listMatchedCmds[i], i);
-		}
-	}
-	firstItemNo = -1;
-}
-
-// 命令排序
-sortCmds = function(cmds){
-	table.sort(cmds, function(next){
-		if(runTimes[owner[1]] !== null && runTimes[next[1]] !== null){
-			if(tonumber(runTimes[owner[1]]) > tonumber(runTimes[next[1]])){
-				return true;
-			}elseif(tonumber(runTimes[owner[1]]) < tonumber(runTimes[next[1]])){
-				return false;
-			}else{
-				return string.cmp(owner[1], next[1]) < 0;
-			}
-		}else{
-			return string.cmp(owner[1], next[1]) < 0;
-		}
-	})	
-}
-
-getCurrentCmd = function(){
-	return currSelected > 0? table.slice(listMatchedCmds[firstItemNo + currSelected - 1], 2, 4): null;
-}
-
-// 解析命令
-parseCmd = function(cmd, cliptext){
-	var isInternal = string.startWith(cmd[3], ':');
-	var cmdStr = isInternal? string.slice(cmd[3], 2): cmd[3];
-
-	if(string.indexOf(cmdStr, '%TOTALCMD%')) cmdStr = string.replace(cmdStr, '@%TOTALCMD%', totalCmdPath);
-	if(string.indexOf(cmdStr, '%EVERYTHING%')) cmdStr = string.replace(cmdStr, '@%EVERYTHING%', everythingPath);
-	if(string.indexOf(cmdStr, '%NIRCMD%')) cmdStr = string.replace(cmdStr, '@%NIRCMD%', nirCmdPath);
-	if(string.indexOf(cmdStr, '%WINCTL%')) cmdStr = string.replace(cmdStr, '@%WINCTL%', winCtlPath);
-	if(string.indexOf(cmdStr, '{%c}')){cliptext = !cliptext? win.clip.read(): cliptext; cmdStr = string.replace(cmdStr, '@{%c}', !cliptext? '': cliptext); };
-	if(string.indexOf(cmdStr, '{%wd}')) cmdStr = string.replace(cmdStr, '@{%wd}', tostring(lastActiveHwnd));
-	argv = string.cmdline(cmdStr);
-	isHideWnd = string.startWith(argv[0], '@');
-	cmdStr = isHideWnd? string.slice(argv[0], 2): argv[0];
-	argv = table.slice(argv, 1);
-	return cmdStr, argv, isInternal, isHideWnd;
+// 关闭markdown预览窗口
+closeMdView = function(){
+	if(frmMdView){
+		frmMdView.close();
+		frmMdView = null;
+	}		
 }
 
 // 启动进程
 processExecute = function(cmdStr,parameters,showCmd){
-	var prcs = process.execute(cmdStr, parameters, ,showCmd);
-	if(!prcs){
-		var errMsg = string.format('命令启动失败！- %s %s', cmdStr, tostring(parameters));
-		mainForm.tray.pop(errMsg, "QLaunch消息", 3);
-		if(isWriteLog) debug.logex.print(errMsg);
-	}else{
-		if(isWriteLog) debug.logex.print(string.format('命令启动成功！- %s %s', cmdStr, tostring(parameters)));
-	}
+	var proc = process.execute(cmdStr, parameters, ,showCmd);
+	showProcessInfo(proc, string.format('%s %s', cmdStr, tostring(parameters)), false);
 }
 
-// 启动进程
+// 执行cmd
 processExeCmd = function(cmdStr, isHideWnd){
-	var prcs = process.popen.cmd(cmdStr);
-	if(!prcs){
-		var errMsg = string.format('命令启动失败！- %s', cmdStr);
-		mainForm.tray.pop(errMsg, "QLaunch消息", 3);
-		if(isWriteLog) debug.logex.print(errMsg);
-	}else{
-		if(isWriteLog) debug.logex.print(string.format('命令启动成功！- %s', cmdStr));
-		if(!isHideWnd) showPopInfo(string.format('QLaunch - execmd: %s', cmdStr), prcs.readAll());
-	}
+	var proc = process.popen.cmd(cmdStr);
+	showProcessInfo(proc, cmdStr, isHideWnd);
 }
 
-// 执行命令
-runCmd = function(cmd, cliptext){
-	// 统计执行次数
-	var index, key, count = runTimes.find(cmd[1]);
-	runTimes.set(cmd[1], count + 1);
+// 执行powershell脚本
+processExePs = function(script, argv, isHideWnd){
+	var param = string.args.join(argv, ' ');
+	var proc  = process.popen.ps1(script, param);//不需要设置权限
+	showProcessInfo(proc, script, isHideWnd);
+}
 
-	// 记录日志
-	if(isWriteLog) debug.logex.print("准备执行命令：" + string.join(cmd, '\t'));
+// 显示进程执行信息
+showProcessInfo = function(proc, cmd, isHideWnd, timeout=1000){
+	var msg = string.format('命令执行%s！- %s', proc? '成功': '失败', cmd);
+	mainForm.tray.pop(msg, "QLaunch消息", proc? 1: 3);
+	if(isWriteLog) debug.logex.print(msg);
 
-	var cmdStr, argv, isInternal, isHideWnd = parseCmd(cmd, cliptext);
-	if(isInternal){
-		select(cmdStr) {
-			case "quit" {
-				mainForm.close();
-			} case "reload" {
-				loadCmds(cmdFilePath);
-				mainForm.tray.pop('配置文件已重新加载！',"QLaunch消息");
-			} case "setclip" {
-				win.clip.write(string.args.join(argv));
-			} case "fileclip" {
-				win.clip.write(string.load(string.args.join(argv)));
-			} case "clearclip" {
-				win.clip.write("");
-			} case "open" {
-				processExecute(string.args.join(argv));
-			} case "execmd" {
-				processExeCmd(string.args.join(argv), isHideWnd);
-			} case "encodeBase64" {
-				win.clip.write(crypt.bin.encodeBase64(win.clip.read()));
-			} case "decodeBase64" {
-				win.clip.write(crypt.bin.decodeBase64(win.clip.read()));
-			} case "formatJson" {
-				win.clip.write(web.json.stringify(web.json.parse(win.clip.read()),true));
-			}else{
-				var errMsg = '未知的内部命令：' + cmd[1];
-				mainForm.tray.pop(errMsg, "QLaunch消息", 3);
-				if(isWriteLog) debug.logex.print(errMsg);
-			}
+	if(proc && type(proc) == 'table'){
+		// 显示执行结果
+		if(!isHideWnd) {
+			proc.waitOne(timeout);
+			var outputStr = proc.readAll();
+			showPopInfo(string.format('QLaunch - execmd: %s', cmd), outputStr);
+		}else{
+			proc.wait(timeout);
 		}
-	}else{
-		processExecute(cmdStr, string.args.join(argv), , !isHideWnd? 5: 0);
 	}
 }
 
@@ -439,7 +594,7 @@ setCmdInfoToClip = function(idx){
 showCmdDetail = function(){
     var cmd = getCurrentCmd();
     if(cmd){
-		mainForm.tray.pop(cmd[3], string.format("[%s]", cmd[1]));
+		showPopInfo(string.format("[%s]", cmd[1]), cmd[3]);
     }
 }
 
@@ -452,68 +607,13 @@ saveRunTimes = function(){
 		}
 	}
     tlist.save(runTimesFile);
+	// 记录日志
+	if(isWriteLog) debug.logex.print("保存命令使用频度文件");
 }
 
 
-/***********************************
- * 主程序：初始化                  *
- ***********************************/
-// 初始化日志
-initLogging();
-
-// 创建单例标识
-mainForm.atom(guid); 
-
-//移除列标题
-mainForm.listview.modifyStyle(,0x4000/*_LVS_NOCOLUMNHEADER*/)
-mainForm.listview.insertColumn("列标题3",35) 
-mainForm.listview.insertColumn("列标题2",190) 
-mainForm.listview.insertColumn("列标题1",272) 
-
-//开启双缓冲，显示更流畅
-mainForm.listview.enableDoubleBuffering();
-
-// 加载命令快捷定义文件
-loadCmds();
-
-// 注册shellhook
-var shellhook = win.util.shellhook(mainForm);
-
-// hook键盘
-var keyHook = key.hook()
-
-/***********************************
- * 消息处理                        *
- ***********************************/
- // 实现双击 ctrl 键激活主界面的功能
-keyHook.proc = function(msg, vkcode, scancode){
-	select( msg ) { 
-		case 0x100/*_WM_KEYDOWN*/{
-			if(vkcode != 0xA2/*_VK_LCTRL*/ && vkcode != 0xA3/*_VK_RCTRL*/ && (::GetKeyState(0x11/*_VK_CTRL*/) & 0x8000)){
-				tmLastPressCtrl = 0;
-			}
-		}
-		case 0x101/*_WM_KEYUP*/{
-            if (vkcode == 0xA2/*_VK_LCTRL*/ || vkcode == 0xA3/*_VK_RCTRL*/) {
-				var tmCur = time.performance.tick();
-				var diffVal = tmCur - tmLastPressCtrl;
-				if(isWriteLog) debug.logex.print(string.format('截获 ctrl 键，间隔:%dms', diffVal));
-				if(diffVal > MIN_INTERVAL && diffVal < MAX_INTERVAL){
-					showMainWindow(!isMainFormShow);
-					tmLastPressCtrl = 0;
-				}else{
-					tmLastPressCtrl = tmCur;
-				}
-            }
-		}
-		else{
-			
-		}
-	}
-	//无返回值则继续调用默认回调函数
-}
-
- mainForm.wndproc = function(hwnd,message,wParam,lParam){
+// windows 消息循环处理程序
+mainForm.wndproc = function(hwnd,message,wParam,lParam){
 	select( message ) { 
     	case 0x201/*_WM_LBUTTONDOWN*/{
 		    var ctrl = ::GetKeyState(0x11/*_VK_CTRL*/) & 0x8000;
@@ -558,11 +658,13 @@ mainForm.listview.onnotify = function(id,code,ptr){
 	}
 }
 
+// 鼠标单击事件处理
 mainForm.listview.onClick = function(item, subItem, nmListView){
 	setSelected(item);
 	mainForm.edit.setFocus();
 }
 
+// 鼠标双击事件处理
 mainForm.listview.onDoubleClick = function(item, subItem, nmListView){
 	setSelected(item);
 	mainForm.onOk();
@@ -574,6 +676,7 @@ mainForm.listview.onSelChanged = function(selected,item,subItem,nmListView){
 }
 */
 
+// 选择光标上下移动事件处理
 mainForm.listview.onSelMoveDown = function(count, isDown=true){
 	if(mainForm.listview.count > 0){
 		if(isDown){
@@ -621,13 +724,7 @@ mainForm.onOk = function(){
 	return true; 	
 }
 
-// 程序退出
-mainForm.onClose = function(hwnd,message,wParam,lParam){
-	saveRunTimes();
-    setAutoRun(autoRun != 0);
-    keyHook.close();
-}
-
+// 计算器计算事件处理
 mainForm.onCalculate = function(){
 	try{
 		var expression = string.slice(mainForm.edit.text, 2);
@@ -642,6 +739,7 @@ mainForm.onCalculate = function(){
 }
 
 
+// 主窗口显示与关闭事件处理
 mainForm.onFormShowInfoClose = function(){
 	if(isCalculaterShow){
 		activeWindow(mainForm.hwnd);
@@ -650,14 +748,21 @@ mainForm.onFormShowInfoClose = function(){
 	}
 }
 
+// 主窗口显示与关闭事件处理
+mainForm.onFormMdViewClose = function(){
+	if(frmMdView){
+		frmMdView = null;
+	}
+}
 
-// 响应输入变化
+// 响应输入框输入变化
 mainForm.edit.onChange = function(){ 
 	if(owner.onModified) owner.onModified(true);
 	matchCmds(mainForm.edit.text);
 	updateListview(1, 1);
 }
 
+// 输入框控件消息处理函数
 mainForm.edit.wndproc = function(hwnd,message,wParam,lParam){
 	select( message ) { 
 		case 0x100/*_WM_KEYDOWN*/{
@@ -702,6 +807,7 @@ mainForm.edit.wndproc = function(hwnd,message,wParam,lParam){
 	//无返回值则继续调用默认回调函数
 }
 
+// 响应系统托盘消息
 mainForm.onTrayMessage = {
 	[0x205/*_WM_RBUTTONUP*/  ] = function(wParam){ 
 	    //弹出托盘菜单以前,一定要前置主窗口中,避免不点击菜单不会消失，父窗口隐藏也要这样做
@@ -720,21 +826,107 @@ mainForm.onTrayMessage = {
 	};
 }
 
+/***********************************
+ * 主程序：初始化                  *
+ ***********************************/
+// 单例检测
+var mutex = process.mutex(guid) 
+if( mutex.conflict ){
+    var atom,hwndConflict = win.ui.atom.find(guid)
+    if( hwndConflict ) win.setForeground(hwndConflict);
+    return;
+}
+
+// 初始化日志
+initLogging();
+
+// 创建单例标识
+mainForm.atom(guid); 
+
+//移除列标题
+mainForm.listview.modifyStyle(,0x4000/*_LVS_NOCOLUMNHEADER*/)
+mainForm.listview.insertColumn("列标题3",35) 
+mainForm.listview.insertColumn("列标题2",190) 
+mainForm.listview.insertColumn("列标题1",272) 
+
+//开启双缓冲，显示更流畅
+mainForm.listview.enableDoubleBuffering();
+
+// 加载命令快捷定义文件
+loadCmds();
+
+// 加载key-value定义文件
+loadKvs();
+
+// 注册shellhook
+var shellhook = win.util.shellhook(mainForm);
+
+// hook键盘
+var keyHook = key.hook()
+
+/***********************************
+ * 消息处理                        *
+ ***********************************/
+ // 实现双击 ctrl 键激活主界面的功能
+keyHook.proc = function(msg, vkcode, scancode){
+	select( msg ) { 
+		case 0x100/*_WM_KEYDOWN*/{
+			if(vkcode != 0xA2/*_VK_LCTRL*/ && vkcode != 0xA3/*_VK_RCTRL*/ && (::GetKeyState(0x11/*_VK_CTRL*/) & 0x8000)){
+				tmLastPressCtrl = 0;
+			}
+		}
+		case 0x101/*_WM_KEYUP*/{
+            if (vkcode == 0xA2/*_VK_LCTRL*/ || vkcode == 0xA3/*_VK_RCTRL*/) {
+				var tmCur = time.performance.tick();
+				var diffVal = tmCur - tmLastPressCtrl;
+				if(isWriteLog) debug.logex.print(string.format('截获 ctrl 键，间隔:%dms', diffVal));
+				if(diffVal > MIN_INTERVAL && diffVal < MAX_INTERVAL){
+					showMainWindow(!isMainFormShow);
+					tmLastPressCtrl = 0;
+				}else{
+					tmLastPressCtrl = tmCur;
+				}
+            }else if(vkcode ==0x1B){
+                if(frmMdView && lastActiveHwnd == frmMdView.hwnd){
+                	closeMdView();
+                }
+            }
+		}
+		else{
+			
+		}
+	}
+	//无返回值则继续调用默认回调函数
+}
+
+// 利用系统钩子处理窗口激活消息
 shellhook.onShellHook=function(hshell,hwnd){ 
 	//判断钩子拦截到的消息类型
     select(hshell ) {
 		case 0x8004/*_HSHELL_WINDOWACTIVATED*/{
 			if(hwnd != 0 && hwnd != mainForm.hwnd){
 				if(isMainFormShow) showMainWindow(false);
-				lastActiveHwnd = hwnd;
 			}
+			lastActiveHwnd = hwnd;
 		}
     }	
+}
+
+// 程序退出
+mainForm.onClose = function(hwnd,message,wParam,lParam){
+	saveRunTimes();
+    setAutoRun(autoRun != 0);
+    keyHook.close();
+	// 记录日志
+	if(isWriteLog) debug.logex.print("程序退出");
 }
 
 /***********************************
  * 主程序：消息循环                *
  ***********************************/
+// 记录日志
+if(isWriteLog) debug.logex.print("程序启动");
+
 mainForm.enableDpiScaling();
 resizeWindow();
 // 计算窗口的新位置，使其居中
