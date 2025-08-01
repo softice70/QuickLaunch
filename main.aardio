@@ -906,8 +906,9 @@ shellhook.onShellHook=function(hshell,hwnd){
 		case 0x8004/*_HSHELL_WINDOWACTIVATED*/{
 			if(hwnd != 0 && hwnd != mainForm.hwnd){
 				if(isMainFormShow) showMainWindow(false);
+				lastActiveHwnd = hwnd;
+				if(isWriteLog) debug.logex.print(string.format('窗口激活:%d', hwnd));
 			}
-			lastActiveHwnd = hwnd;
 		}
     }	
 }
